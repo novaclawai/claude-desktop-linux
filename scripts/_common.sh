@@ -30,9 +30,9 @@ verify_sha256() {
 	local label="${3:-file}"
 
 	if [[ -z $expected_hash ]]; then
-		echo "Warning: No SHA-256 hash for ${label}," \
-			'skipping verification' >&2
-		return 0
+		echo "Error: No SHA-256 hash for ${label};" \
+			'refusing to proceed' >&2
+		return 1
 	fi
 
 	echo "Verifying SHA-256 checksum for ${label}..."

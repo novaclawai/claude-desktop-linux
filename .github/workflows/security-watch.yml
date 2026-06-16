@@ -1,0 +1,124 @@
+name: security-watch
+
+# Weekly check for security-relevant upstream changes. When upstream
+# (aaddrick/claude-desktop-debian) moves, diff the security-sensitive paths
+# against the recorded baseline. Security-relevant changes open/refresh a
+# tracking issue and an AI review and DO NOT advance the baseline; purely
+# cosmetic upstream churn advances the baseline automatically.
+
+on:
+  schedule:
+    # Mondays at 09:00 UTC.
+    - cron: '0 9 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  upstream-security-watch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Add upstream remote and fetch
+        run: |
+          url='https://github.com/aaddrick/claude-desktop-debian.git'
+          git remote add upstream "$url" \
+            || git remote set-url upstream "$url"
+          git fetch upstream main
+
+      - name: Detect upstream security-relevant changes
+        id: detect
+        env:
+          # A change under any of these paths must be reviewed by a human
+          # (and the AI reviewer) before the baseline is allowed to move.
+          SEC_PATHS: >-
+            scripts/cowork-vm-service.js
+            scripts/patches/cowork.sh
+            scripts/packaging
+            scripts/launcher-common.sh
+            scripts/setup
+            scripts/_common.sh
+        run: |
+          base="$(cat .security-baseline)"
+          up="$(git rev-parse upstream/main)"
+          {
+            echo "base=$base"
+            echo "up=$up"
+          } >> "$GITHUB_OUTPUT"
+          if [ "$base" = "$up" ]; then
+            echo "Baseline already at upstream/main ($up); nothing to do."
+            echo "equal=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "equal=false" >> "$GITHUB_OUTPUT"
+          read -ra paths <<< "$SEC_PATHS"
+          git diff "$base..$up" -- "${paths[@]}" > security.diff
+          if [ -s security.diff ]; then
+            echo "Security-relevant upstream changes in $base..$up"
+            echo "sec_empty=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "No security-relevant changes in $base..$up"
+            echo "sec_empty=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: AI security review of upstream diff
+        if: >-
+          steps.detect.outputs.equal == 'false' &&
+          steps.detect.outputs.sec_empty == 'false'
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            You are reviewing upstream changes to
+            aaddrick/claude-desktop-debian for security regressions before
+            they are mirrored into this hardened fork. Change NO files in
+            the repository.
+
+            The security-relevant diff for
+            ${{ steps.detect.outputs.base }}..${{ steps.detect.outputs.up }}
+            is in `security.diff` at the repo root. Read it (you may also run
+            `git diff ${{ steps.detect.outputs.base }}..${{ steps.detect.outputs.up }}`).
+
+            For every hunk, assess these dimensions and label the hunk
+            `benign` or `needs-review` with a one-line reason:
+              - new or changed network endpoints / download URLs
+              - new child_process / spawn / exec usage
+              - path handling (traversal, symlinks, $HOME containment)
+              - bwrap / AppArmor / sandbox / user-namespace logic
+              - Debian/RPM postinst / maintainer scripts
+              - Electron flags, especially --no-sandbox
+
+            Then open or update EXACTLY ONE GitHub issue with `gh`:
+              - Exact title:
+                "Upstream security review needed: ${{ steps.detect.outputs.base }}..${{ steps.detect.outputs.up }}"
+              - If an open issue with that exact title already exists, update
+                it in place instead of opening a duplicate.
+              - The body must contain the full security.diff inside a fenced
+                ```diff block, a per-hunk checklist (one `- [ ]` item per
+                file/hunk carrying your benign/needs-review label), and a
+                closing note that `.security-baseline` is intentionally NOT
+                advanced until this review is signed off.
+
+      - name: Advance baseline (no security-relevant changes)
+        if: >-
+          steps.detect.outputs.equal == 'false' &&
+          steps.detect.outputs.sec_empty == 'true'
+        env:
+          UP: ${{ steps.detect.outputs.up }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          printf '%s\n' "$UP" > .security-baseline
+          git config user.name 'github-actions[bot]'
+          git config user.email \
+            '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .security-baseline
+          git commit -m 'chore(security-watch): advance baseline'
+          # Plain push to the current branch only — never --force, so the
+          # hardening branch history is never rewritten.
+          git push origin "HEAD:$BRANCH"

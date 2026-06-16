@@ -249,7 +249,15 @@ function resolveSubpath(subpath) {
     if (asRoot.startsWith(os.homedir() + path.sep) || asRoot === os.homedir()) {
         return asRoot;
     }
-    return path.resolve(path.join(os.homedir(), subpath));
+    const resolved = path.resolve(path.join(os.homedir(), subpath));
+    // Containment guard (defense-in-depth, mirrors translateGuestPath
+    // and the #554 fix): reject results that escape the home directory.
+    if (resolved !== os.homedir() &&
+        !resolved.startsWith(os.homedir() + path.sep)) {
+        log(`resolveSubpath: traversal blocked: ${subpath} -> ${resolved}`);
+        return os.homedir();
+    }
+    return resolved;
 }
 
 /**
@@ -2429,10 +2437,13 @@ function detectBackend(emitEvent) {
                 logError(`bwrap stderr: ${stderr.slice(0, 500)}`);
             }
             logError(
-                'Falling back to host-direct (no isolation). Set '
-                + 'COWORK_VM_BACKEND=kvm to opt into KVM, or fix the '
-                + 'bwrap issue above to restore sandbox isolation.');
-            return new HostBackend(emitEvent);
+                'Refusing to silently fall back to host-direct (no '
+                + 'isolation). Set COWORK_VM_BACKEND=kvm to opt into '
+                + 'KVM, fix the bwrap issue above to restore sandbox '
+                + 'isolation, or set COWORK_VM_BACKEND=host to '
+                + 'explicitly accept running with no isolation.');
+            throw new Error(
+                'cowork: bwrap unavailable and host fallback disabled');
         }
     }
 
@@ -2449,8 +2460,13 @@ function detectBackend(emitEvent) {
         log(`KVM not available: ${e.message}`);
     }
 
-    log('Backend: host (no isolation)');
-    return new HostBackend(emitEvent);
+    logError(
+        'No sandbox backend available (bwrap or KVM) and refusing to '
+        + 'fall back to host-direct. Install or fix bwrap, set '
+        + 'COWORK_VM_BACKEND=kvm, or set COWORK_VM_BACKEND=host to '
+        + 'explicitly accept running with no isolation.');
+    throw new Error(
+        'cowork: no sandbox backend and host fallback disabled');
 }
 
 // ============================================================
