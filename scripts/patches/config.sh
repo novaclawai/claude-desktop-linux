@@ -182,56 +182,53 @@ let patchCount = 0;
 // ================================================================
 // Sub-patch 1: Filter .asar from --add-dir loop
 //
-// Target (unique, 1 occurrence):
+// Target (1+ occurrences — the upstream bundle may carry the
+// dispatch loop more than once, e.g. one per session manager
+// (chat vs Code/Agent panel)):
 //   for (let O of A) Y.push("--add-dir", O);
 // Fallback (if minifier uses .forEach):
 //   A.forEach(O=>Y.push("--add-dir",O))
+//
+// We filter EVERY occurrence via a global replace, rebuilding each
+// replacement from that match's own captures, rather than asserting
+// uniqueness — so the patch survives upstream duplicating the loop
+// (the #649 "matches 2 times" regression) and differing var names.
 // ================================================================
 {
-    // Primary: for...of pattern
-    const forOfRe = /for\s*\(\s*let\s+([\w$]+)\s+of\s+([\w$]+)\s*\)\s*([\w$]+)\.push\(\s*"--add-dir"\s*,\s*\1\s*\)/;
-    // Fallback: .forEach pattern
-    const forEachRe = /([\w$]+)\.forEach\(\s*([\w$]+)\s*=>\s*([\w$]+)\.push\(\s*"--add-dir"\s*,\s*\2\s*\)\s*\)/;
+    // Primary: for...of pattern (global — all dispatch sites)
+    const forOfRe = /for\s*\(\s*let\s+([\w$]+)\s+of\s+([\w$]+)\s*\)\s*([\w$]+)\.push\(\s*"--add-dir"\s*,\s*\1\s*\)/g;
+    // Fallback: .forEach pattern (global)
+    const forEachRe = /([\w$]+)\.forEach\(\s*([\w$]+)\s*=>\s*([\w$]+)\.push\(\s*"--add-dir"\s*,\s*\2\s*\)\s*\)/g;
 
-    let match = code.match(forOfRe);
+    let replaced = 0;
     let variant = 'for-of';
-    if (!match) {
-        match = code.match(forEachRe);
+    let next = code.replace(forOfRe, (m, iterVar, arrVar, pushTarget) => {
+        replaced++;
+        return 'for(let ' + iterVar + ' of ' + arrVar +
+            '.filter(_d=>!_d.endsWith(".asar")))' +
+            pushTarget + '.push("--add-dir",' + iterVar + ')';
+    });
+    if (replaced === 0) {
         variant = 'forEach';
+        next = code.replace(forEachRe, (m, arrVar, iterVar, pushTarget) => {
+            replaced++;
+            return arrVar +
+                '.filter(_d=>!_d.endsWith(".asar")).forEach(' +
+                iterVar + '=>' + pushTarget +
+                '.push("--add-dir",' + iterVar + '))';
+        });
     }
-    if (!match) {
+    if (replaced === 0) {
         console.error('FATAL: --add-dir dispatch loop not found.');
         console.error('  for(let X of Y) Z.push("--add-dir", X)');
         console.error('  Y.forEach(X=>Z.push("--add-dir", X))');
         process.exit(1);
     }
-
-    // Count assertion: exactly 1 match expected
-    const escaped = match[0].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const allMatches = code.match(new RegExp(escaped, 'g'));
-    if (allMatches && allMatches.length > 1) {
-        console.error('FATAL: --add-dir pattern matches ' +
-            allMatches.length + ' times (expected 1).');
-        process.exit(1);
-    }
-
-    let filtered;
-    if (variant === 'for-of') {
-        const [, iterVar, arrVar, pushTarget] = match;
-        filtered = 'for(let ' + iterVar + ' of ' + arrVar +
-            '.filter(_d=>!_d.endsWith(".asar")))' +
-            pushTarget + '.push("--add-dir",' + iterVar + ')';
-    } else {
-        const [, arrVar, iterVar, pushTarget] = match;
-        filtered = arrVar +
-            '.filter(_d=>!_d.endsWith(".asar")).forEach(' +
-            iterVar + '=>' + pushTarget +
-            '.push("--add-dir",' + iterVar + '))';
-    }
-    code = code.replace(match[0], filtered);
-    console.log('  Filtered --add-dir dispatch (' +
-        variant + ' variant)');
-    patchCount++;
+    code = next;
+    console.log('  Filtered --add-dir dispatch (' + variant +
+        ' variant, ' + replaced + ' site' +
+        (replaced === 1 ? '' : 's') + ')');
+    patchCount += replaced;
 }
 
 // ================================================================
