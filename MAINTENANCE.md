@@ -52,12 +52,18 @@ upstreamable (see below).
 
 ## Operational guidance
 
-Defense-in-depth for running and building this fork:
+Full step-by-step setup (fresh VM and host, with verification) lives in
+[`docs/learnings/sandbox-enablement.md`](docs/learnings/sandbox-enablement.md).
+Defense-in-depth for running and building this fork, in brief:
 
-- **Force VM isolation for Cowork.** `export COWORK_VM_BACKEND=kvm` before
-  launching so Cowork runs under QEMU/KVM rather than the weaker bwrap path.
+- **Arm the sandboxes by installing the `.deb`.** On Ubuntu 23.10+/24.04+ the
+  postinst installs AppArmor `userns` profiles for both `/usr/bin/bwrap`
+  (Cowork) and the Electron binary (Chromium), and sets `chrome-sandbox` SUID —
+  so bubblewrap (the default, real-isolation Cowork backend) just works. Use
+  `export COWORK_VM_BACKEND=kvm` for full-VM isolation wherever `/dev/kvm`
+  exists (a host, or a VM with nested virtualization enabled).
 - **Prefer an X11 session to keep the Chromium sandbox.** On Wayland the
-  deb/rpm/nix launchers add `--no-sandbox` (toggle near
+  deb/nix launchers add `--no-sandbox` (toggle near
   `scripts/launcher-common.sh:319-321`); the AppImage always adds it. Running
   under X11 avoids that downgrade.
 - **Build inside a throwaway container.** The build pulls **unpinned npm**

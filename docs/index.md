@@ -34,6 +34,7 @@ Hard-won knowledge from debugging real bugs. Consult before working on the relat
 - [**MCP double-spawn**](learnings/mcp-double-spawn.md) — why stdio MCPs spawn twice with chat + Code/Agent panels open
 - [**Test harness — Electron hooks**](learnings/test-harness-electron-hooks.md) — why constructor-level `BrowserWindow` wraps get bypassed by the frame-fix Proxy
 - [**Test harness — AX-tree walker**](learnings/test-harness-ax-tree-walker.md) — five non-obvious traps in the v7 fingerprint walker
+- [**Cowork + Chromium sandbox enablement**](learnings/sandbox-enablement.md) — turning both sandboxes on under Ubuntu 24.04's userns restriction: the `.deb` postinst auto-config, the Wayland `--no-sandbox`/Xorg requirement, fresh VM + host runbooks, and verification recipes
 
 ## Testing
 
