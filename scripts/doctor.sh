@@ -1143,35 +1143,48 @@ print(len(servers))
 		_info 'VM image: not downloaded yet'
 	fi
 
-	# Determine active backend (matches daemon's detectBackend())
-	local cowork_backend='none (host-direct, no isolation)'
+	# Determine active backend (mirrors daemon's detectBackend(),
+	# which now FAILS CLOSED — throws rather than silently running
+	# host-direct — when no sandbox backend is available).
+	local cowork_backend _cowork_failclosed=true
+	cowork_backend='none — fail-closed (no backend; daemon refuses to start)'
 	if [[ -n ${COWORK_VM_BACKEND-} ]]; then
+		_cowork_failclosed=false
 		case ${COWORK_VM_BACKEND,,} in
 			kvm)  cowork_backend='KVM (full VM isolation, via override)' ;;
 			bwrap) cowork_backend='bubblewrap (namespace sandbox, via override)' ;;
-			host) cowork_backend='host-direct (no isolation, via override)' ;;
+			host) cowork_backend='host-direct (NO isolation, via explicit override)' ;;
 			*)
 				_warn_unknown_backend
 				cowork_backend="auto-detect (invalid override '${COWORK_VM_BACKEND}' — see warning above)"
 				;;
 		esac
 	elif command -v bwrap &>/dev/null; then
-		# bwrap is installed: if the probe succeeds, use it;
-		# otherwise fall to host (matching daemon behavior, so we
-		# don't silently imply KVM will be chosen when bwrap is
-		# blocked — see #351).
+		# bwrap is installed: if the probe succeeds, use it; otherwise
+		# the daemon FAILS CLOSED (throws) rather than degrading to
+		# host-direct, so report that — don't imply host, or that KVM
+		# will be auto-chosen when bwrap is blocked (#351, hardening).
 		if bwrap --ro-bind / / true &>/dev/null; then
 			cowork_backend='bubblewrap (namespace sandbox)'
+			_cowork_failclosed=false
 		else
-			cowork_backend='host-direct (bwrap probe failed — see above)'
+			cowork_backend='none — fail-closed (bwrap probe failed; daemon refuses to start)'
 		fi
 	elif [[ -e /dev/kvm ]] \
 		&& [[ -r /dev/kvm && -w /dev/kvm ]] \
 		&& command -v qemu-system-x86_64 &>/dev/null \
 		&& [[ -e /dev/vhost-vsock ]]; then
 		cowork_backend='KVM (full VM isolation)'
+		_cowork_failclosed=false
 	fi
-	_info "Cowork isolation: $cowork_backend"
+	if [[ $_cowork_failclosed == true ]]; then
+		_warn "Cowork isolation: $cowork_backend"
+		_info 'To enable isolation: allow unprivileged userns (bwrap'
+		_info 'AppArmor profile), or COWORK_VM_BACKEND=kvm (with'
+		_info '/dev/kvm + qemu), or COWORK_VM_BACKEND=host for none.'
+	else
+		_info "Cowork isolation: $cowork_backend"
+	fi
 
 	# Custom bwrap mount configuration
 	_doctor_check_bwrap_mounts
