@@ -1025,18 +1025,25 @@ install_node_pty() {
 		node_pty_build_dir="$work_dir/node-pty-build"
 		mkdir -p "$node_pty_build_dir" || exit 1
 		cd "$node_pty_build_dir" || exit 1
-		echo '{"name":"node-pty-build","version":"1.0.0","private":true}' > package.json
+		# Supply-chain hardening: install node-pty from the committed
+		# pinned lockfile via `npm ci` (exact version + integrity hash),
+		# not `npm install` latest; a tampered tarball then fails the
+		# integrity check and aborts the build. Bump via pinned/.
+		cp "$project_root/pinned/node-pty.package.json" \
+			package.json || exit 1
+		cp "$project_root/pinned/node-pty.package-lock.json" \
+			package-lock.json || exit 1
 
-		echo 'Installing node-pty (this compiles native module)...'
-		# Fail loudly on npm install failure rather than warn-and-continue.
+		echo 'Installing pinned node-pty (npm ci; compiles native)...'
+		# Fail loudly on install failure rather than warn-and-continue.
 		# The previous behavior silently dropped pty_src_dir, skipped the
 		# entire copy block, and shipped the upstream Windows node-pty
 		# binaries (the #401 failure mode). check_dependencies should now
 		# install gcc/g++/make/python3 before we get here, so this branch
 		# is the last line of defense for build-tool gaps that auto-install
 		# couldn't fix (unknown distro, broken package mirror, etc.).
-		if ! npm install node-pty 2>&1; then
-			echo "Error: 'npm install node-pty' failed." >&2
+		if ! npm ci 2>&1; then
+			echo "Error: 'npm ci' (pinned node-pty) failed." >&2
 			echo 'node-pty has a native module compiled via node-gyp;' >&2
 			echo 'this usually means the build environment lacks a C/C++' >&2
 			echo 'compiler, make, or python3.' >&2

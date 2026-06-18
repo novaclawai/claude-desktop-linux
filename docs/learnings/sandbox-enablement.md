@@ -110,19 +110,19 @@ sudo timeout 90 tcpdump -nn -i any 'udp port 53' 2>/dev/null \
 **Honest caveats — what these do and don't prove:**
 
 - **Reproducibility proves determinism, not dependency safety.** A malicious *pinned* dep would also reproduce identically. What covers that here: the only shipping native dep (`node-pty`) is a well-known package at a pinned, 0-vuln version; everything else is Anthropic's SHA-verified code or the checksum-verified Electron binary.
-- **The lockfile is a record, not enforcement.** `build.sh` installs via `npm install <pkgs>` (no committed lockfile), so `pinned/node-pty.package-lock.json` is a known-good *reference* for drift-detection. Enforcement = wire `build.sh` to `npm ci` from committed lockfiles (a build-process change, not yet done).
+- **node-pty is pin-*enforced*; the Electron toolchain is audit-gated.** `cowork.sh` installs node-pty via **`npm ci` from the committed `pinned/node-pty.*` pair** — exact version + integrity-hash verification, so a tampered or drifted tarball **fails the build**. The Electron toolchain stays `npm install` (its version tracks the upstream app), but its binary is checksum-verified by `@electron/get` and its packages are audited by the build's own `npm install`. After a build, `scripts/verify-deps.sh` re-audits node-pty + checks it against the pinned lockfile; the weekly `dep-audit` workflow watches for advisories disclosed *after* pinning.
 - **Egress: non-root `ss`/snapshot sampling is unreliable** — it misses IPv6 and short-lived connections (Sift and Datadog only surfaced after fixing capture bugs). Use the root `tcpdump` line above, or an egress allowlist, for a guaranteed-complete map. The third parties are claude.ai's product telemetry (identical on the official app), not introduced by this build.
 
 **"Ready for a host" checklist:**
 
 1. ✅ `app.asar` SHA-256 pin verified (each build)
 2. ✅ patches = your reviewed diff (`verify-patches` OK; daemon == source)
-3. ✅ shipping native dep (`node-pty`) audited clean + version-pinned
+3. ✅ shipping native dep (`node-pty`) audited clean + **pin-enforced via `npm ci`** (integrity-verified each build)
 4. ✅ build reproducible (byte-identical across two builds)
 5. ⚠️ egress = Anthropic + claude.ai's embedded 3rd-party telemetry (Sift, Datadog) — enforce with an allowlist if desired
 6. ✅ sandboxes active (Chromium + Cowork bwrap)
 7. ☐ on the host: run as your normal user (not root); optional egress allowlist / dedicated user
-8. ☐ *(optional)* wire `build.sh` to `npm ci` from committed lockfiles for durable pinning
+8. ✅ node-pty install **enforced** via `npm ci` from the committed lockfile (`cowork.sh`); `scripts/verify-deps.sh` + the weekly `dep-audit` workflow watch for advisories/drift
 
 ## Cowork KVM backend (optional, strongest isolation)
 

@@ -1,0 +1,60 @@
+name: dep-audit
+
+# Weekly `npm audit` of the committed pinned dependency lockfiles. Pinning stops
+# drift + tampering, but it CANNOT catch a pinned, already-shipped version that
+# later gets a disclosed advisory — this watches for exactly that and opens one
+# tracking issue when it happens, so the pin doesn't quietly go stale.
+
+on:
+  schedule:
+    # Mondays 10:00 UTC (staggered after security-watch's 09:00).
+    - cron: '0 10 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  audit-pinned-deps:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Audit pinned node-pty lockfile
+        id: audit
+        run: |
+          work="$(mktemp -d)"
+          cp pinned/node-pty.package.json "$work/package.json"
+          cp pinned/node-pty.package-lock.json "$work/package-lock.json"
+          ( cd "$work" && npm ci --ignore-scripts ) >/dev/null 2>&1 || true
+          if ( cd "$work" && npm audit --audit-level=low ) \
+              > "$GITHUB_WORKSPACE/audit.txt" 2>&1; then
+            echo 'found=false' >> "$GITHUB_OUTPUT"
+            echo 'No advisories for pinned deps.'
+          else
+            echo 'found=true' >> "$GITHUB_OUTPUT"
+          fi
+          cat "$GITHUB_WORKSPACE/audit.txt"
+
+      - name: Open or update tracking issue
+        if: steps.audit.outputs.found == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          title='Pinned dependency advisory detected'
+          report="$(head -c 5000 audit.txt)"
+          body="$(printf 'npm audit flagged the pinned deps (pinned/node-pty.*). Review, bump the pinned lockfile, then re-run the build + scripts/verify-deps.sh.\n\n%s' "$report")"
+          num="$(gh issue list --search "$title in:title" --state open \
+            --json number --jq '.[0].number // empty')"
+          if [ -n "$num" ]; then
+            gh issue comment "$num" --body "$body"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi
