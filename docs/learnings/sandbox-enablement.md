@@ -75,6 +75,55 @@ bwrap --ro-bind / / true; echo $?     # 0 = userns allowed
 
 The `[e]` bracket in the `pgrep` pattern stops it matching its own command line (see *Gotchas*). A healthy sandboxed Electron tree shows sandboxed zygotes (`--type=zygote`) **and** one unsandboxed zygote (`--no-zygote-sandbox`, for the GPU/utility processes) — that split is normal; the decisive signal is the absence of `--no-sandbox` on the main browser process.
 
+## Build-trust & supply-chain validation
+
+Before trusting a build on a host, verify the *build* — the VM only contains the build's blast radius; the same `.deb` on a host carries whatever was baked in.
+
+```bash
+# 1. Provenance: app.asar is Anthropic's official code, SHA-256-pinned at build.
+#    Build log shows: "SHA-256 verified: Claude Desktop installer".
+
+# 2. Dependency audit — two npm sets run at build time:
+#    a) node-pty (ships in-app, native)   b) Electron toolchain (build host)
+( cd build/node-pty-build && npm audit )                 # expect: 0 vulnerabilities
+grep -E "audited [0-9]+ packages|found [0-9]+ vulnerab" build.log   # toolchain audit
+
+# 3. Reproducibility — diff a fresh build's asar contents vs the installed one:
+( cd build/electron-app/app.asar.contents && find . -type f -exec sha256sum {} + ) \
+  | awk '{print $2" "$1}' | sort        # compare two builds; identical == deterministic
+
+# 4. Egress — what it phones home to (root; close other apps first):
+sudo timeout 90 tcpdump -nn -i any 'udp port 53' 2>/dev/null \
+  | grep -oE 'A+\? [a-z0-9._-]+' | awk '{print $2}' | sort -u
+```
+
+**Results captured this session** (Claude Desktop `1.12603.1`, Ubuntu 24.04):
+
+| Check | Result |
+| --- | --- |
+| App provenance (SHA-256 pin) | ✅ verified |
+| `node-pty` (ships in-app) | ✅ `1.1.0`, `npm audit` 0 vulns — lockfile at [`pinned/node-pty.package-lock.json`](../../pinned/node-pty.package-lock.json) |
+| Electron toolchain (83 pkgs) | ✅ `npm audit` 0 vulns (1 deprecation `boolean@3.2.0`, not a vuln); Electron binary checksum-verified by `@electron/get` |
+| Reproducibility | ✅ two builds → **153/153 packed + 8/8 unpacked files byte-identical**; shipped `cowork-vm-service.js` == source |
+| Egress | ⚠️ Anthropic (`assets.claude.ai`, API) + 3rd-party telemetry **Sift** (fraud) & **Datadog** (RUM), loaded as claude.ai *web content* (not in the build) |
+
+**Honest caveats — what these do and don't prove:**
+
+- **Reproducibility proves determinism, not dependency safety.** A malicious *pinned* dep would also reproduce identically. What covers that here: the only shipping native dep (`node-pty`) is a well-known package at a pinned, 0-vuln version; everything else is Anthropic's SHA-verified code or the checksum-verified Electron binary.
+- **The lockfile is a record, not enforcement.** `build.sh` installs via `npm install <pkgs>` (no committed lockfile), so `pinned/node-pty.package-lock.json` is a known-good *reference* for drift-detection. Enforcement = wire `build.sh` to `npm ci` from committed lockfiles (a build-process change, not yet done).
+- **Egress: non-root `ss`/snapshot sampling is unreliable** — it misses IPv6 and short-lived connections (Sift and Datadog only surfaced after fixing capture bugs). Use the root `tcpdump` line above, or an egress allowlist, for a guaranteed-complete map. The third parties are claude.ai's product telemetry (identical on the official app), not introduced by this build.
+
+**"Ready for a host" checklist:**
+
+1. ✅ `app.asar` SHA-256 pin verified (each build)
+2. ✅ patches = your reviewed diff (`verify-patches` OK; daemon == source)
+3. ✅ shipping native dep (`node-pty`) audited clean + version-pinned
+4. ✅ build reproducible (byte-identical across two builds)
+5. ⚠️ egress = Anthropic + claude.ai's embedded 3rd-party telemetry (Sift, Datadog) — enforce with an allowlist if desired
+6. ✅ sandboxes active (Chromium + Cowork bwrap)
+7. ☐ on the host: run as your normal user (not root); optional egress allowlist / dedicated user
+8. ☐ *(optional)* wire `build.sh` to `npm ci` from committed lockfiles for durable pinning
+
 ## Cowork KVM backend (optional, strongest isolation)
 
 ```bash
